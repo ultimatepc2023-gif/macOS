@@ -11,17 +11,17 @@ jobs:
     steps:
       - name: Configure Timezone & User Account
         run: |
-          # Set Timezone
+          # 1. Set System Time Zone to UTC+05:30
           sudo systemsetup -settimezone "Asia/Colombo"
 
-          # Get password
+          # 2. Setup Password from Secrets or Default
           PASSWORD="${{ secrets.RDP_PASSWORD }}"
           if [ -z "$PASSWORD" ]; then
             PASSWORD="123456"
           fi
           echo "::add-mask::$PASSWORD"
 
-          # Create admin user
+          # 3. Create Admin User
           USERNAME="abicloudpc"
           sudo dscl . -create /Users/$USERNAME
           sudo dscl . -create /Users/$USERNAME UserShell /bin/bash
@@ -33,27 +33,29 @@ jobs:
           sudo dscl . -append /Groups/admin GroupMembership $USERNAME
           sudo createhomedir -c -u $USERNAME > /dev/null 2>&1 || true
 
-      - name: Enable Screen Sharing & VNC Service
+      - name: Enable macOS Screen Sharing (Native VNC)
         run: |
           PASSWORD="${{ secrets.RDP_PASSWORD }}"
           if [ -z "$PASSWORD" ]; then
             PASSWORD="123456"
           fi
 
-          # Enable VNC Legacy authentication
-          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
-            -configure -clientopts -setvnclegacy yes -vnclegacy yes
+          # Reset ARD Agent settings
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -deactivate -stop
 
+          # Allow access for all users with full privileges
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
-            -configure -clientopts -setvncpw -vncpasswd "$PASSWORD"
+            -configure -allowAccessFor -allUsers -privs -all
 
+          # Set VNC password directly
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
-            -configure -users runner,abicloudpc -access -on -privs -all
+            -configure -clientopts -setvnclegacy yes -setvncpw -vncpasswd "$PASSWORD"
 
+          # Activate agent
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
-            -activate -configure -access -on -restart -agent -console
+            -activate -restart -agent -console
 
-          # Prevent system sleep
+          # Prevent display/system sleep
           sudo caffeinate -d -i -m -u &
 
       - name: Start Free TCP Tunnel (Bore)
@@ -67,7 +69,7 @@ jobs:
           ./bore local 5900 --to bore.pub > bore.log 2>&1 &
           sleep 5
 
-          # Fixed log parsing logic (handles both bore.pub:PORT and remote_port=PORT)
+          # Robust log parsing logic (extracts remote port safely)
           BORE_PORT=$(grep -oE 'bore\.pub:[0-9]+|remote_port=[0-9]+' bore.log | grep -oE '[0-9]+' | head -n 1)
 
           if [ -z "$BORE_PORT" ]; then
