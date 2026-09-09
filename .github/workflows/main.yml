@@ -11,7 +11,7 @@ jobs:
     steps:
       - name: Configure Timezone & User Account
         run: |
-          # 1. Set System Time Zone to Sri Lanka / India (UTC+05:30)
+          # 1. Set System Time Zone to UTC+05:30
           sudo systemsetup -settimezone "Asia/Colombo"
 
           # 2. Get password from secrets (or fallback)
@@ -33,30 +33,34 @@ jobs:
           sudo dscl . -append /Groups/admin GroupMembership $USERNAME
           sudo createhomedir -c -u $USERNAME > /dev/null 2>&1 || true
 
-      - name: Enable Screen Sharing & VNC for Standard Clients
+      - name: Enable Screen Sharing, VNC & Open Firewall
         run: |
           PASSWORD="${{ secrets.RDP_PASSWORD }}"
           if [ -z "$PASSWORD" ]; then
             PASSWORD="123456"
           fi
 
-          # 1. Enable VNC Legacy Password for third-party clients (TightVNC, UltraVNC)
+          # 1. Enable VNC Legacy Password & Remote Management
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
             -configure -clientopts -setvnclegacy yes -vnclegacy yes
 
-          # 2. Set global VNC authentication password
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
             -configure -clientopts -setvncpw -vncpasswd "$PASSWORD"
 
-          # 3. Grant full remote privileges to both runner and abicloudpc
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
             -configure -users runner,abicloudpc -access -on -privs -all
 
-          # 4. Activate ARD and Screen Sharing Service
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
             -activate -configure -access -on -restart -agent -console
 
-          # 5. Prevent system/display sleep
+          # 2. Unblock Port 5900 in macOS Application Firewall
+          FW="/Library/Preferences/com.apple.alf/facility"
+          sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setglobalstate off
+          sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add /System/Library/CoreServices/RemoteManagement/screensharingd.bundle/Contents/MacOS/screensharingd
+          sudo /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp /System/Library/CoreServices/RemoteManagement/screensharingd.bundle/Contents/MacOS/screensharingd
+          sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setglobalstate on
+
+          # 3. Prevent system/display sleep
           sudo caffeinate -d -i -m -u &
 
       - name: Install & Connect Tailscale
