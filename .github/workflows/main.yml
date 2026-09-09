@@ -1,27 +1,22 @@
-name: macOS Remote Desktop
+name: macOS Remote Desktop (RustDesk)
 
 on:
   workflow_dispatch:
 
 jobs:
-  secure-vnc:
+  rustdesk-gui:
     runs-on: macos-latest
     timeout-minutes: 3600
 
     steps:
-      - name: Configure Timezone & User Account
+      - name: Configure Admin User
         run: |
-          # 1. Set System Time Zone to UTC+05:30
-          sudo systemsetup -settimezone "Asia/Colombo"
-
-          # 2. Setup Password from Secrets or Default
           PASSWORD="${{ secrets.RDP_PASSWORD }}"
           if [ -z "$PASSWORD" ]; then
             PASSWORD="123456"
           fi
           echo "::add-mask::$PASSWORD"
 
-          # 3. Create Admin User
           USERNAME="abicloudpc"
           sudo dscl . -create /Users/$USERNAME
           sudo dscl . -create /Users/$USERNAME UserShell /bin/bash
@@ -33,66 +28,46 @@ jobs:
           sudo dscl . -append /Groups/admin GroupMembership $USERNAME
           sudo createhomedir -c -u $USERNAME > /dev/null 2>&1 || true
 
-      - name: Enable macOS Screen Sharing (Native VNC)
+      - name: Install & Run RustDesk Server
         run: |
+          # Install RustDesk via Homebrew
+          brew install --cask rustdesk
+
+          # Start RustDesk service
+          sudo /Applications/RustDesk.app/Contents/MacOS/RustDesk --service &
+          sleep 5
+
+          # Set permanent password
           PASSWORD="${{ secrets.RDP_PASSWORD }}"
           if [ -z "$PASSWORD" ]; then
             PASSWORD="123456"
           fi
+          sudo /Applications/RustDesk.app/Contents/MacOS/RustDesk --password "$PASSWORD"
 
-          # Reset ARD Agent settings
-          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -deactivate -stop
+          # Get RustDesk ID
+          RUSTDESK_ID=""
+          for i in {1..15}; do
+            RUSTDESK_ID=$(sudo /Applications/RustDesk.app/Contents/MacOS/RustDesk --get-id 2>/dev/null | tr -d ' \n\r')
+            if [[ "$RUSTDESK_ID" =~ ^[0-9]+$ ]]; then
+              break
+            fi
+            sleep 2
+          done
 
-          # Allow access for all users with full privileges
-          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
-            -configure -allowAccessFor -allUsers -privs -all
-
-          # Set VNC password directly
-          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
-            -configure -clientopts -setvnclegacy yes -setvncpw -vncpasswd "$PASSWORD"
-
-          # Activate agent
-          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
-            -activate -restart -agent -console
-
-          # Prevent display/system sleep
+          echo "RUSTDESK_ID=$RUSTDESK_ID" >> $GITHUB_ENV
           sudo caffeinate -d -i -m -u &
-
-      - name: Start Free TCP Tunnel (Bore)
-        run: |
-          # Download and extract bore CLI for macOS
-          curl -LO https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-apple-darwin.tar.gz
-          tar -xzf bore-v0.5.0-x86_64-apple-darwin.tar.gz
-          chmod +x bore
-
-          # Start background TCP tunnel forwarding local port 5900 to bore.pub
-          ./bore local 5900 --to bore.pub > bore.log 2>&1 &
-          sleep 5
-
-          # Robust log parsing logic (extracts remote port safely)
-          BORE_PORT=$(grep -oE 'bore\.pub:[0-9]+|remote_port=[0-9]+' bore.log | grep -oE '[0-9]+' | head -n 1)
-
-          if [ -z "$BORE_PORT" ]; then
-            echo "Error starting bore tunnel. Logs:"
-            cat bore.log
-            exit 1
-          fi
-
-          echo "BORE_PORT=$BORE_PORT" >> $GITHUB_ENV
 
       - name: Maintain Active Runner Loop
         run: |
           echo ""
           echo "======================================================="
-          echo "MAC REMOTE DESKTOP READY"
-          echo "VNC Host : bore.pub"
-          echo "VNC Port : $BORE_PORT"
-          echo "Username : abicloudpc  (or runner)"
-          echo "Password : [PROTECTED BY RDP_PASSWORD SECRET]"
+          echo "MAC REMOTE DESKTOP READY (RUSTDESK)"
+          echo "RustDesk ID : $RUSTDESK_ID"
+          echo "Password    : [PROTECTED BY RDP_PASSWORD SECRET]"
           echo "======================================================="
           echo ""
 
           while true; do
-            echo "[$(date)] Mac Runner VNC Engine Active..."
+            echo "[$(date)] Mac Runner Active..."
             sleep 300
           done
