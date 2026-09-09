@@ -11,17 +11,17 @@ jobs:
     steps:
       - name: Configure Timezone & User Account
         run: |
-          # 1. Set System Time Zone to UTC+05:30
+          # Set System Timezone
           sudo systemsetup -settimezone "Asia/Colombo"
 
-          # 2. Get password from secrets (or fallback)
+          # Password setup
           PASSWORD="${{ secrets.RDP_PASSWORD }}"
           if [ -z "$PASSWORD" ]; then
             PASSWORD="123456"
           fi
           echo "::add-mask::$PASSWORD"
 
-          # 3. Create administrator account explicitly
+          # Create admin user
           USERNAME="abicloudpc"
           sudo dscl . -create /Users/$USERNAME
           sudo dscl . -create /Users/$USERNAME UserShell /bin/bash
@@ -33,14 +33,14 @@ jobs:
           sudo dscl . -append /Groups/admin GroupMembership $USERNAME
           sudo createhomedir -c -u $USERNAME > /dev/null 2>&1 || true
 
-      - name: Enable Screen Sharing, VNC & Open Firewall
+      - name: Enable Screen Sharing & VNC Service
         run: |
           PASSWORD="${{ secrets.RDP_PASSWORD }}"
           if [ -z "$PASSWORD" ]; then
             PASSWORD="123456"
           fi
 
-          # 1. Enable VNC Legacy Password & Remote Management
+          # Enable VNC Legacy authentication for non-Apple viewers
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
             -configure -clientopts -setvnclegacy yes -vnclegacy yes
 
@@ -53,49 +53,40 @@ jobs:
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
             -activate -configure -access -on -restart -agent -console
 
-          # 2. Unblock Port 5900 in macOS Application Firewall
-          FW="/Library/Preferences/com.apple.alf/facility"
-          sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setglobalstate off
-          sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add /System/Library/CoreServices/RemoteManagement/screensharingd.bundle/Contents/MacOS/screensharingd
-          sudo /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp /System/Library/CoreServices/RemoteManagement/screensharingd.bundle/Contents/MacOS/screensharingd
-          sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setglobalstate on
-
-          # 3. Prevent system/display sleep
+          # Prevent sleep
           sudo caffeinate -d -i -m -u &
 
-      - name: Install & Connect Tailscale
+      - name: Start ngrok TCP Tunnel
         run: |
-          brew install tailscale
-          sudo tailscaled --state=mem: &
+          # Install ngrok
+          brew install ngrok/ngrok/ngrok
+
+          # Authenticate ngrok
+          ngrok config add-authtoken "${{ secrets.NGROK_AUTH_TOKEN }}"
+
+          # Start TCP tunnel for VNC port 5900 in background
+          ngrok tcp 5900 --log=stdout > ngrok.log 2>&1 &
           sleep 5
 
-          sudo tailscale up --authkey="${{ secrets.TAILSCALE_AUTH_KEY }}" --hostname="gh-mac-runner-$GITHUB_RUN_ID"
+          # Extract public address and port
+          NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | grep -o 'tcp://[^"]*' | sed 's/tcp:\/\///')
 
-          TS_IP=""
-          for i in {1..15}; do
-            TS_IP=$(tailscale ip -4 2>/dev/null | tr -d ' \n\r')
-            if [[ $TS_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-              break
-            fi
-            sleep 3
-          done
-
-          if [ -z "$TS_IP" ]; then
-            echo "Error: Tailscale IP assignment timed out."
+          if [ -z "$NGROK_URL" ]; then
+            echo "Error: Failed to obtain ngrok URL."
+            cat ngrok.log
             exit 1
           fi
 
-          echo "Tailscale IP assigned successfully: $TS_IP"
-          echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
+          echo "NGROK_ADDRESS=$NGROK_URL" >> $GITHUB_ENV
 
       - name: Maintain Active Runner Loop
         run: |
           echo ""
           echo "======================================================="
           echo "MAC REMOTE DESKTOP READY"
-          echo "VNC Address : $TAILSCALE_IP:5900"
-          echo "Username    : abicloudpc  (or runner)"
-          echo "Password    : [PROTECTED BY RDP_PASSWORD SECRET]"
+          echo "VNC Host/Port : $NGROK_ADDRESS"
+          echo "Username      : abicloudpc  (or runner)"
+          echo "Password      : [PROTECTED BY RDP_PASSWORD SECRET]"
           echo "======================================================="
           echo ""
 
