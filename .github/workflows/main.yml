@@ -9,7 +9,7 @@ jobs:
     timeout-minutes: 3600
 
     steps:
-      - name: Configure Admin User
+      - name: Configure Admin User & Active GUI Session
         run: |
           PASSWORD="${{ secrets.RDP_PASSWORD }}"
           if [ -z "$PASSWORD" ]; then
@@ -17,6 +17,7 @@ jobs:
           fi
           echo "::add-mask::$PASSWORD"
 
+          # Create admin user
           USERNAME="abicloudpc"
           sudo dscl . -create /Users/$USERNAME
           sudo dscl . -create /Users/$USERNAME UserShell /bin/bash
@@ -28,34 +29,43 @@ jobs:
           sudo dscl . -append /Groups/admin GroupMembership $USERNAME
           sudo createhomedir -c -u $USERNAME > /dev/null 2>&1 || true
 
-      - name: Install & Run RustDesk Server
+          # Force GUI display/sleep prevention
+          sudo caffeinate -d -i -m -u &
+
+      - name: Install & Configure RustDesk GUI
         run: |
-          # Install RustDesk via Homebrew
+          # Install RustDesk
           brew install --cask rustdesk
 
-          # Start RustDesk service
-          sudo /Applications/RustDesk.app/Contents/MacOS/RustDesk --service &
-          sleep 5
-
-          # Set permanent password
           PASSWORD="${{ secrets.RDP_PASSWORD }}"
           if [ -z "$PASSWORD" ]; then
             PASSWORD="123456"
           fi
+
+          # Register RustDesk Service in the system domain
+          sudo /Applications/RustDesk.app/Contents/MacOS/RustDesk --install-service
+
+          # Start server and set permanent password
+          sudo /Applications/RustDesk.app/Contents/MacOS/RustDesk --service &
+          sleep 5
           sudo /Applications/RustDesk.app/Contents/MacOS/RustDesk --password "$PASSWORD"
 
-          # Get RustDesk ID
+          # Fetch verified RustDesk ID
           RUSTDESK_ID=""
-          for i in {1..15}; do
-            RUSTDESK_ID=$(sudo /Applications/RustDesk.app/Contents/MacOS/RustDesk --get-id 2>/dev/null | tr -d ' \n\r')
-            if [[ "$RUSTDESK_ID" =~ ^[0-9]+$ ]]; then
+          for i in {1..20}; do
+            RUSTDESK_ID=$(sudo /Applications/RustDesk.app/Contents/MacOS/RustDesk --get-id 2>/dev/null | grep -oE '[0-9]{9,}' | head -n 1)
+            if [ -n "$RUSTDESK_ID" ]; then
               break
             fi
-            sleep 2
+            sleep 3
           done
 
+          if [ -z "$RUSTDESK_ID" ]; then
+            echo "Error: Failed to register RustDesk ID."
+            exit 1
+          fi
+
           echo "RUSTDESK_ID=$RUSTDESK_ID" >> $GITHUB_ENV
-          sudo caffeinate -d -i -m -u &
 
       - name: Maintain Active Runner Loop
         run: |
