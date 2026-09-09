@@ -1,15 +1,15 @@
-name: macOS Remote Desktop (RustDesk)
+name: macOS Remote Desktop (VNC)
 
 on:
   workflow_dispatch:
 
 jobs:
-  rustdesk-gui:
+  mac-gui-vnc:
     runs-on: macos-latest
     timeout-minutes: 3600
 
     steps:
-      - name: Configure Admin User & Active GUI Session
+      - name: Configure Admin Account
         run: |
           PASSWORD="${{ secrets.RDP_PASSWORD }}"
           if [ -z "$PASSWORD" ]; then
@@ -17,7 +17,6 @@ jobs:
           fi
           echo "::add-mask::$PASSWORD"
 
-          # Create admin user
           USERNAME="abicloudpc"
           sudo dscl . -create /Users/$USERNAME
           sudo dscl . -create /Users/$USERNAME UserShell /bin/bash
@@ -29,55 +28,60 @@ jobs:
           sudo dscl . -append /Groups/admin GroupMembership $USERNAME
           sudo createhomedir -c -u $USERNAME > /dev/null 2>&1 || true
 
-          # Force GUI display/sleep prevention
-          sudo caffeinate -d -i -m -u &
-
-      - name: Install & Configure RustDesk GUI
+      - name: Setup Virtual Display & Standalone VNC Server
         run: |
-          # Install RustDesk
-          brew install --cask rustdesk
+          # 1. Install x11vnc and Xvfb tools via Homebrew
+          brew install x11vnc
 
           PASSWORD="${{ secrets.RDP_PASSWORD }}"
           if [ -z "$PASSWORD" ]; then
             PASSWORD="123456"
           fi
 
-          # Register RustDesk Service in the system domain
-          sudo /Applications/RustDesk.app/Contents/MacOS/RustDesk --install-service
+          # 2. Store VNC password for standard VNC auth (TightVNC compatible)
+          mkdir -p ~/.vnc
+          x11vnc -storepw "$PASSWORD" ~/.vnc/passwd
 
-          # Start server and set permanent password
-          sudo /Applications/RustDesk.app/Contents/MacOS/RustDesk --service &
+          # 3. Start x11vnc server on port 5900 with standard RFB protocol
+          sudo x11vnc -rfbauth ~/.vnc/passwd -rfbport 5900 -forever -bg -shared -noxdamage -create
+
+          # Prevent sleep
+          sudo caffeinate -d -i -m -u &
+
+      - name: Start Free TCP Tunnel (Bore)
+        run: |
+          # Download bore CLI
+          curl -LO https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-apple-darwin.tar.gz
+          tar -xzf bore-v0.5.0-x86_64-apple-darwin.tar.gz
+          chmod +x bore
+
+          # Start TCP tunnel for VNC port 5900
+          ./bore local 5900 --to bore.pub > bore.log 2>&1 &
           sleep 5
-          sudo /Applications/RustDesk.app/Contents/MacOS/RustDesk --password "$PASSWORD"
 
-          # Fetch verified RustDesk ID
-          RUSTDESK_ID=""
-          for i in {1..20}; do
-            RUSTDESK_ID=$(sudo /Applications/RustDesk.app/Contents/MacOS/RustDesk --get-id 2>/dev/null | grep -oE '[0-9]{9,}' | head -n 1)
-            if [ -n "$RUSTDESK_ID" ]; then
-              break
-            fi
-            sleep 3
-          done
+          # Extract port
+          BORE_PORT=$(grep -oE 'bore\.pub:[0-9]+|remote_port=[0-9]+' bore.log | grep -oE '[0-9]+' | head -n 1)
 
-          if [ -z "$RUSTDESK_ID" ]; then
-            echo "Error: Failed to register RustDesk ID."
+          if [ -z "$BORE_PORT" ]; then
+            echo "Error starting bore tunnel. Logs:"
+            cat bore.log
             exit 1
           fi
 
-          echo "RUSTDESK_ID=$RUSTDESK_ID" >> $GITHUB_ENV
+          echo "BORE_PORT=$BORE_PORT" >> $GITHUB_ENV
 
       - name: Maintain Active Runner Loop
         run: |
           echo ""
           echo "======================================================="
-          echo "MAC REMOTE DESKTOP READY (RUSTDESK)"
-          echo "RustDesk ID : $RUSTDESK_ID"
-          echo "Password    : [PROTECTED BY RDP_PASSWORD SECRET]"
+          echo "MAC REMOTE DESKTOP READY"
+          echo "VNC Host : bore.pub"
+          echo "VNC Port : $BORE_PORT"
+          echo "Password : [PROTECTED BY RDP_PASSWORD SECRET]"
           echo "======================================================="
           echo ""
 
           while true; do
-            echo "[$(date)] Mac Runner Active..."
+            echo "[$(date)] Mac Runner VNC Active..."
             sleep 300
           done
