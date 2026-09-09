@@ -1,20 +1,20 @@
-name: macOS
+name: macOS Remote Desktop
 
 on:
   workflow_dispatch:
 
 jobs:
-  macOS:
+  secure-vnc:
     runs-on: macos-latest
     timeout-minutes: 3600
 
     steps:
       - name: Configure Timezone & User Account
         run: |
-          # Set System Timezone
+          # Set Timezone
           sudo systemsetup -settimezone "Asia/Colombo"
 
-          # Password setup
+          # Get password
           PASSWORD="${{ secrets.RDP_PASSWORD }}"
           if [ -z "$PASSWORD" ]; then
             PASSWORD="123456"
@@ -53,40 +53,40 @@ jobs:
           sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
             -activate -configure -access -on -restart -agent -console
 
-          # Prevent sleep
+          # Prevent system sleep
           sudo caffeinate -d -i -m -u &
 
-      - name: Start ngrok TCP Tunnel
+      - name: Start Free TCP Tunnel (Bore)
         run: |
-          # Install ngrok
-          brew install ngrok/ngrok/ngrok
+          # Download and extract bore CLI for macOS
+          curl -LO https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-apple-darwin.tar.gz
+          tar -xzf bore-v0.5.0-x86_64-apple-darwin.tar.gz
+          chmod +x bore
 
-          # Authenticate ngrok
-          ngrok config add-authtoken "${{ secrets.NGROK_AUTH_TOKEN }}"
-
-          # Start TCP tunnel for VNC port 5900 in background
-          ngrok tcp 5900 --log=stdout > ngrok.log 2>&1 &
+          # Start background TCP tunnel forwarding local port 5900 to bore.pub
+          ./bore local 5900 --to bore.pub > bore.log 2>&1 &
           sleep 5
 
-          # Extract public address and port
-          NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | grep -o 'tcp://[^"]*' | sed 's/tcp:\/\///')
+          # Extract assigned remote port from logs
+          BORE_PORT=$(grep -oE 'port [0-9]+' bore.log | awk '{print $2}' | head -n 1)
 
-          if [ -z "$NGROK_URL" ]; then
-            echo "Error: Failed to obtain ngrok URL."
-            cat ngrok.log
+          if [ -z "$BORE_PORT" ]; then
+            echo "Error starting bore tunnel. Logs:"
+            cat bore.log
             exit 1
           fi
 
-          echo "NGROK_ADDRESS=$NGROK_URL" >> $GITHUB_ENV
+          echo "BORE_PORT=$BORE_PORT" >> $GITHUB_ENV
 
       - name: Maintain Active Runner Loop
         run: |
           echo ""
           echo "======================================================="
           echo "MAC REMOTE DESKTOP READY"
-          echo "VNC Host/Port : $NGROK_ADDRESS"
-          echo "Username      : abicloudpc  (or runner)"
-          echo "Password      : [PROTECTED BY RDP_PASSWORD SECRET]"
+          echo "VNC Host : bore.pub"
+          echo "VNC Port : $BORE_PORT"
+          echo "Username : abicloudpc  (or runner)"
+          echo "Password : [PROTECTED BY RDP_PASSWORD SECRET]"
           echo "======================================================="
           echo ""
 
