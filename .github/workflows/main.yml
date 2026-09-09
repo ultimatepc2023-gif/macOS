@@ -9,9 +9,9 @@ jobs:
     timeout-minutes: 3600
 
     steps:
-      - name: Configure Timezone & Enable VNC / Screen Sharing
+      - name: Configure Timezone & User Account
         run: |
-          # 1. Set System Time Zone to UTC+05:30
+          # 1. Set System Time Zone to Sri Lanka / India (UTC+05:30)
           sudo systemsetup -settimezone "Asia/Colombo"
 
           # 2. Get password from secrets (or fallback)
@@ -21,48 +21,52 @@ jobs:
           fi
           echo "::add-mask::$PASSWORD"
 
-          # 3. Enable VNC / Remote Management via Kickstart
-          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
-            -activate -configure -access -on \
-            -clientopts -setvnclegacy -vnclegacy yes \
-            -clientopts -setvncpw -vncpasswd "$PASSWORD" \
-            -restart -agent -console
+          # 3. Create administrator account explicitly
+          USERNAME="abicloudpc"
+          sudo dscl . -create /Users/$USERNAME
+          sudo dscl . -create /Users/$USERNAME UserShell /bin/bash
+          sudo dscl . -create /Users/$USERNAME RealName "Abi Cloud PC"
+          sudo dscl . -create /Users/$USERNAME UniqueID 502
+          sudo dscl . -create /Users/$USERNAME PrimaryGroupID 20
+          sudo dscl . -create /Users/$USERNAME NFSHomeDirectory /Users/$USERNAME
+          sudo dscl . -passwd /Users/$USERNAME "$PASSWORD"
+          sudo dscl . -append /Groups/admin GroupMembership $USERNAME
+          sudo createhomedir -c -u $USERNAME > /dev/null 2>&1 || true
 
-          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
-            -configure -allowAccessFor -allUsers -privs -all
-
-      - name: Create Custom macOS User Account
+      - name: Enable Screen Sharing & VNC for Standard Clients
         run: |
-          USERNAME="Abi Cloud PC"
           PASSWORD="${{ secrets.RDP_PASSWORD }}"
           if [ -z "$PASSWORD" ]; then
             PASSWORD="123456"
           fi
 
-          # Create user profile via dscl
-          sudo dscl . -create /Users/abicloudpc UserShell /bin/bash
-          sudo dscl . -create /Users/abicloudpc RealName "$USERNAME"
-          sudo dscl . -create /Users/abicloudpc UniqueID 502
-          sudo dscl . -create /Users/abicloudpc PrimaryGroupID 20
-          sudo dscl . -create /Users/abicloudpc NFSHomeDirectory /Users/abicloudpc
-          sudo dscl . -passwd /Users/abicloudpc "$PASSWORD"
-          sudo dscl . -append /Groups/admin GroupMembership abicloudpc
-          sudo createhomedir -c -u abicloudpc > /dev/null 2>&1 || true
+          # 1. Enable VNC Legacy Password for third-party clients (TightVNC, UltraVNC)
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -configure -clientopts -setvnclegacy yes -vnclegacy yes
 
-          # Prevent display from sleeping during the workflow
+          # 2. Set global VNC authentication password
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -configure -clientopts -setvncpw -vncpasswd "$PASSWORD"
+
+          # 3. Grant full remote privileges to both runner and abicloudpc
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -configure -users runner,abicloudpc -access -on -privs -all
+
+          # 4. Activate ARD and Screen Sharing Service
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -activate -configure -access -on -restart -agent -console
+
+          # 5. Prevent system/display sleep
           sudo caffeinate -d -i -m -u &
 
       - name: Install & Connect Tailscale
         run: |
-          # Install Tailscale CLI via Homebrew
           brew install tailscale
           sudo tailscaled --state=mem: &
           sleep 5
 
-          # Connect using GitHub Secret TAILSCALE_AUTH_KEY (macOS syntax)
           sudo tailscale up --authkey="${{ secrets.TAILSCALE_AUTH_KEY }}" --hostname="gh-mac-runner-$GITHUB_RUN_ID"
 
-          # Fetch Tailscale IPv4
           TS_IP=""
           for i in {1..15}; do
             TS_IP=$(tailscale ip -4 2>/dev/null | tr -d ' \n\r')
@@ -86,7 +90,7 @@ jobs:
           echo "======================================================="
           echo "MAC REMOTE DESKTOP READY"
           echo "VNC Address : $TAILSCALE_IP:5900"
-          echo "Username    : runner  (OR  abicloudpc)"
+          echo "Username    : abicloudpc  (or runner)"
           echo "Password    : [PROTECTED BY RDP_PASSWORD SECRET]"
           echo "======================================================="
           echo ""
