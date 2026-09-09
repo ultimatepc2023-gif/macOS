@@ -59,8 +59,8 @@ jobs:
           sudo tailscaled --state=mem: &
           sleep 5
 
-          # Connect using GitHub Secret TAILSCALE_AUTH_KEY
-          sudo tailscale up --authkey="${{ secrets.TAILSCALE_AUTH_KEY }}" --hostname="gh-mac-runner-$GITHUB_RUN_ID" --unattended
+          # Connect using GitHub Secret TAILSCALE_AUTH_KEY (macOS syntax)
+          sudo tailscale up --authkey="${{ secrets.TAILSCALE_AUTH_KEY }}" --hostname="gh-mac-runner-$GITHUB_RUN_ID"
 
           # Fetch Tailscale IPv4
           TS_IP=""
